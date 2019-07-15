@@ -1,0 +1,111 @@
+provider "aws" {
+  region  = "${var.aws_region}"
+  profile = "${var.aws_profile}"
+}
+
+
+#------ Security Group ------
+resource "aws_security_group" "test" {
+  name        = "james20190714-sg"
+  description = "Used for access to the dev instance"
+  vpc_id      = "vpc-a0c345da"
+
+  #SSH
+
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["${var.localip}"]
+  }
+
+  #HTTP
+
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["${var.localip}"]
+  }
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+
+#------ Application Load Balancer ------
+
+resource "aws_lb" "test-lb" {
+  name = "${var.domain_name}-alb"
+  internal = false
+  load_balancer_type = "application"
+  security_groups = ["${aws_security_group.test.id}",]
+  subnets = ["subnet-f07e1497","subnet-7d063c37"]
+  enable_deletion_protection = false
+  enable_cross_zone_load_balancing = true
+  idle_timeout                = 400
+
+  tags {
+    Name = "test_${var.domain_name}-alb"
+  }
+}
+
+#instance target group
+
+resource "aws_lb_target_group" "test-lb-tg" {
+  name = "test-lb-tg"
+  port = 80
+  protocol = "HTTP"
+  vpc_id = "vpc-a0c345da"
+}
+
+
+#load balancer listener
+
+resource "aws_lb_listener" "test-lb-ln" {
+  load_balancer_arn = "${aws_lb.test-lb.arn}"
+  port = "80"
+  protocol = "HTTP"
+  
+  default_action {
+    type = "forward"
+    target_group_arn = "${aws_lb_target_group.test-lb-tg.arn}"
+  }
+
+}
+
+
+#---- Auto Scaling Group ---------------
+
+resource "aws_launch_configuration" "wp_lc" {
+  name_prefix          = "wp_lc-"
+  image_id             = "${var.dev_ami}"
+  instance_type        = "${var.lc_instance_type}"
+  security_groups = ["${aws_security_group.test.id}",]
+
+  user_data = <<EOF
+#!/bin/bash
+yum -y install httpd
+service httpd start
+chkconfig httpd on
+EOF
+  
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+
+resource "aws_autoscaling_group" "bar" {
+  max_size                  = "${var.asg_max}"
+  min_size                  = "${var.asg_min}"
+  health_check_grace_period = "${var.asg_grace}"
+  health_check_type         = "${var.asg_hct}"
+  desired_capacity          = "${var.asg_cap}"
+  vpc_zone_identifier = ["subnet-f07e1497","subnet-7d063c37"]
+  launch_configuration      = "${aws_launch_configuration.wp_lc.name}"
+  target_group_arns = ["${aws_lb_target_group.test-lb-tg.arn}",]
+}
